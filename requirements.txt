@@ -1,0 +1,10 @@
+matplotlib>=3.5
+numpy>=1.20
+requests>=2.25
+pydantic>=1.10
+scipy>=1.5
+pytest>=6.2
+mpi4py>=3.0
+# If using Dolfinx / FEniCS from source or conda, you may not install via pip
+# but you do need an MPI build and possibly fenics/dolfinx:
+# fenics-dolfinx, e.g., from conda-forge or Docker image
