@@ -1,52 +1,60 @@
-"""
-finite_element_diffusion.py
-
-Uses dolfinx to solve a 2D diffusion PDE with advanced BCs.
-Installation or usage might require Docker or conda with fenics/dolfinx + MPI.
-"""
-
 import dolfinx
 import ufl
 import math
+import numpy as np
 
-def solve_fem_diffusion_2d(mesh, boundary_markers, D_expr, f_expr, bc_dirichlet_value=1.0):
+def solve_fem_diffusion_2d(domain, D_expr, rhs_expr, dirichlet_bcs, neumann_bcs=None):
     """
-    Solve -div(D grad(C)) = f in 2D domain, with advanced BCs using dolfinx.
-    mesh: DolfinX mesh
-    boundary_markers: a MeshTags or similar to identify boundary subdomains
-    D_expr: UFL expression or Constant
-    f_expr: source term
-    bc_dirichlet_value: Dirichlet BC value
-    returns: dolfinx.fem.Function (the solution)
+    Solve -div(D grad(u)) = rhs_expr in domain, with advanced boundary conditions.
+    domain: a dolfinx mesh
+    D_expr: UFL expression or dolfin Constant
+    rhs_expr: UFL expression or dolfin Constant
+    dirichlet_bcs: list of (subdomain_marker, value)
+    neumann_bcs: optional list of (subdomain_marker, flux_expr)
+    returns: (FunctionSpace, solution Function)
     """
-    V = dolfinx.fem.FunctionSpace(mesh, ("CG", 1))
+    V = dolfinx.fem.FunctionSpace(domain, ("CG",1))
 
-    # Suppose boundary_markers has:
-    #   1 => Dirichlet region, 2 => Neumann region, etc.
-    # We'll define a Dirichlet BC on subdomain_id=1
-    # Real usage: locate dofs with subdomain
-    # For demonstration, let's do a global Dirichlet:
-    bc_nodes = dolfinx.fem.locate_dofs_topological(V, mesh.topology.dim - 1, boundary_markers.indices)
-    bc_value = dolfinx.fem.Constant(mesh, float(bc_dirichlet_value))
-    bc_dir = dolfinx.fem.dirichletbc(bc_value, bc_nodes, V)
-    bcs = [bc_dir]
-
-    C = ufl.TrialFunction(V)
+    # define test/trial
+    u = ufl.TrialFunction(V)
     v = ufl.TestFunction(V)
 
-    D = D_expr  # e.g. a dolfinx.fem.Constant or Expression
-    f = f_expr
+    # define boundary conditions
+    # This code is just a placeholder approach for advanced subdomain usage.
+    # You can locate dofs geometrically or with subdomain markers.
+    # We'll assume user does that externally.
+    # For demonstration, let's assume "dirichlet_bcs" is a list of (locate_dofs, value).
+    # E.g. see main HPC code for how to do it with fem.locate_dofs_geometrical.
 
-    a = D*ufl.inner(ufl.grad(C), ufl.grad(v))*ufl.dx
-    L = f*v*ufl.dx
-    A = dolfinx.fem.assemble_matrix(a, bcs=bcs)
+    bcs = []
+    for (dofs, val) in dirichlet_bcs:
+        bc = dolfinx.fem.dirichletbc(val, dofs, V)
+        bcs.append(bc)
+
+    # define PDE: -div(D grad(u)) = rhs_expr
+    a = ufl.dot(D_expr*ufl.grad(u), ufl.grad(v))*ufl.dx
+    L = rhs_expr*v*ufl.dx
+
+    # neumann BC => add boundary integrals if needed
+    # e.g. L += flux_expr * v * ufl.ds(subdomain_id)
+
+    A = dolfinx.fem.petsc.assemble_matrix(dolfinx.fem.form(a), bcs=bcs)
     A.assemble()
-    b = dolfinx.fem.assemble_vector(L)
-    dolfinx.fem.apply_lifting(b, [a], [bcs])
-    b.ghostUpdate(addv=dolfinx.cpp.la.InsertMode.ADD, mode=dolfinx.cpp.la.ScatterMode.REVERSE)
-    dolfinx.fem.set_bc(b, bcs)
+    b = dolfinx.fem.petsc.assemble_vector(dolfinx.fem.form(L))
+    dolfinx.fem.petsc.apply_lifting(b, [dolfinx.fem.form(a)], bcs=[bcs])
+    b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+    dolfinx.fem.petsc.set_bc(b, bcs)
 
-    C_sol = dolfinx.fem.Function(V)
-    solver = dolfinx.la.create_solve(A, C_sol.vector)
-    solver.solve(b, C_sol.vector)
-    return C_sol
+    # solve
+    A_mat = A
+    solver = PETSc.KSP().create(domain.comm)
+    solver.setOperators(A_mat)
+    solver.setType("preonly")
+    solver.getPC().setType("lu")
+    solver.solve(b, b)
+
+    # solution
+    uh = dolfinx.fem.Function(V)
+    uh.vector.axpy(1,b)
+    uh.vector.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+    return (V, uh)
